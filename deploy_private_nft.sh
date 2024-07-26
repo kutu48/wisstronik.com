@@ -26,7 +26,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 contract PrivateNFT is ERC721, Ownable {
     mapping(address => bool) private whitelist;
 
-    constructor() ERC721("PrivateNFT", "PNFT") {}
+    constructor() ERC721("GlobaljayaNFT", "GNFT") {}
 
     modifier onlyWhitelisted() {
         require(whitelist[msg.sender], "Not whitelisted");
