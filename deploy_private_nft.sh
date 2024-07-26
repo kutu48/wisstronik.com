@@ -1,182 +1,114 @@
-#!/bin/sh
+#!/bin/bash
 
-# Function to handle errors
-handle_error() {
-    echo "Error occurred in script execution. Exiting."
-    exit 1
-}
-
-# Trap any error
-trap 'handle_error' ERR
-
-# Update and upgrade the system
-echo "Updating and upgrading the system..."
-sudo apt-get update && sudo apt-get upgrade -y
-clear
-
-# Install necessary packages and dependencies
-echo "Installing necessary packages and dependencies..."
-npm install --save-dev hardhat
-npm install dotenv
-npm install @swisstronik/utils
-npm install @openzeppelin/contracts
-npm install @openzeppelin/contracts-upgradeable
-npm install --save-dev @openzeppelin/hardhat-upgrades
-npm install @nomicfoundation/hardhat-toolbox
-npm install @swisstronik/sdk
-npm install typescript ts-node @types/node
-echo "Installation of dependencies completed."
-
-# Create a new Hardhat project
-echo "Creating a new Hardhat project..."
-npx hardhat init
-
-# Remove the default Lock.sol contract
-echo "Removing default Lock.sol contract..."
-rm -f contracts/Lock.sol
-
-# Create .env file
-echo "Creating .env file..."
+# Prompt for user input
+read -p "Enter the RPC URL (e.g., https://json-rpc.testnet.swisstronik.com/): " RPC_URL
 read -p "Enter your private key: " PRIVATE_KEY
-echo "PRIVATE_KEY=$PRIVATE_KEY" > .env
-echo ".env file created."
+read -p "Enter the recipient address: " RECIPIENT_ADDRESS
 
-# Configure Hardhat
-echo "Configuring Hardhat..."
-cat << 'EOL' > hardhat.config.ts
-import { HardhatUserConfig } from 'hardhat/config';
-import '@nomicfoundation/hardhat-toolbox';
-import dotenv from 'dotenv';
-import '@openzeppelin/hardhat-upgrades';
+# Install dependencies
+echo "Installing dependencies..."
+npm install @openzeppelin/contracts ethers swisstronik-sdk hardhat
 
-dotenv.config();
+# Initialize Hardhat project
+npx hardhat init --yes
 
-const config: HardhatUserConfig = {
-  defaultNetwork: 'swisstronik',
-  solidity: '0.8.20',
-  networks: {
-    swisstronik: {
-      url: 'https://json-rpc.testnet.swisstronik.com/',
-      accounts: [`0x${process.env.PRIVATE_KEY}`],
-    },
-  },
-};
-
-export default config;
-EOL
-echo "Hardhat configuration completed."
-
-# Collect NFT details
-read -p "Enter the NFT name: " NFT_NAME
-read -p "Enter the NFT symbol: " NFT_SYMBOL
-
-# Create the private ERC-721 contract
-echo "Creating PrivateNFT.sol contract..."
+# Create the contract directory
 mkdir -p contracts
-cat << EOL > contracts/PrivateNFT.sol
+
+# Create the ERC-721 contract
+cat > contracts/PrivateNFT.sol << EOL
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 contract PrivateNFT is ERC721, Ownable {
-    uint256 private _nextTokenId;
-    
-    constructor() ERC721("$NFT_NAME", "$NFT_SYMBOL") {
-        _nextTokenId = 1;
+    mapping(address => bool) private whitelist;
+
+    constructor() ERC721("PrivateNFT", "PNFT") {}
+
+    modifier onlyWhitelisted() {
+        require(whitelist[msg.sender], "Not whitelisted");
+        _;
     }
 
-    function _baseURI() internal view virtual override returns (string memory) {
-        return "https://api.yourproject.com/metadata/";
+    function addToWhitelist(address _address) external onlyOwner {
+        whitelist[_address] = true;
     }
 
-    function mint(address to) public onlyOwner {
-        uint256 currentTokenId = _nextTokenId;
-        _safeMint(to, currentTokenId);
-        _nextTokenId++;
+    function removeFromWhitelist(address _address) external onlyOwner {
+        whitelist[_address] = false;
+    }
+
+    function mint(address to, uint256 tokenId) public onlyOwner onlyWhitelisted {
+        _mint(to, tokenId);
+    }
+
+    function transferFrom(address from, address to, uint256 tokenId) public override onlyWhitelisted {
+        super.transferFrom(from, to, tokenId);
     }
 }
 EOL
-echo "PrivateNFT.sol contract created."
 
-# Compile the contract
-echo "Compiling the contract..."
-npx hardhat compile
-echo "Contract compiled."
+echo "Solidity contract created at contracts/PrivateNFT.sol"
 
-# Create deploy.ts script
-echo "Creating deploy.ts script..."
-mkdir -p scripts utils
-cat << 'EOL' > scripts/deploy.ts
-import { ethers } from 'hardhat'
-import fs from 'fs'
-import path from 'path'
+# Create the Hardhat config file
+cat > hardhat.config.js << EOL
+require("@nomiclabs/hardhat-waffle");
 
-async function main() {
-  const Contract = await ethers.getContractFactory('PrivateNFT')
-
-  console.log('Deploying PrivateNFT token...')
-  const contract = await Contract.deploy()
-
-  await contract.waitForDeployment()
-  const contractAddress = await contract.getAddress()
-  console.log('PrivateNFT token deployed to:', contractAddress)
-
-  const deployedAddressPath = path.join(__dirname, '..', 'utils', 'deployed-address.ts')
-
-  const fileContent = `const deployedAddress = '${contractAddress}'\n\nexport default deployedAddress\n`
-
-  fs.writeFileSync(deployedAddressPath, fileContent, { encoding: 'utf8' })
-  console.log('Address written to deployed-address.ts')
-}
-
-main()
-  .then(() => process.exit(0))
-  .catch((error) => {
-    console.error(error)
-    process.exit(1)
-})
+module.exports = {
+  solidity: "0.8.0",
+  networks: {
+    testnet: {
+      url: "$RPC_URL",
+      accounts: ["$PRIVATE_KEY"]
+    }
+  }
+};
 EOL
-echo "deploy.ts script created."
 
-# Create mint.ts script using SwisstronikSDK
-echo "Creating mint.ts script..."
-cat << 'EOL' > scripts/mint.ts
-import { ethers, network } from 'hardhat'
-import { SwisstronikSDK } from '@swisstronik/sdk'
-import deployedAddress from '../utils/deployed-address'
+echo "Hardhat config file created at hardhat.config.js"
+
+# Create the deployment script
+cat > deploy.js << EOL
+const { ethers } = require("hardhat");
+const fs = require("fs");
 
 async function main() {
-  const contractAddress = deployedAddress
+    const [deployer] = await ethers.getSigners();
+    console.log("Deploying contracts with the account:", deployer.address);
 
-  const [signer] = await ethers.getSigners()
+    // Compile the contract
+    await hre.run('compile');
 
-  const sdk = new SwisstronikSDK({
-    privateKey: process.env.PRIVATE_KEY!,
-    rpcUrl: network.config.url!,
-  })
+    // Deploy contract
+    const PrivateNFT = await ethers.getContractFactory("PrivateNFT");
+    const contract = await PrivateNFT.deploy();
+    await contract.deployed();
+    console.log("Contract deployed at:", contract.address);
 
-  const contract = new sdk.Contract(contractAddress, [
-    'function mint(address to) public',
-  ])
+    // Whitelist and mint
+    const recipientAddress = "$RECIPIENT_ADDRESS";
+    let tx = await contract.addToWhitelist(recipientAddress);
+    await tx.wait();
+    console.log("Address whitelisted:", recipientAddress);
 
-  const recipient = signer.address
-  const tx = await contract.methods.mint(recipient).send({ from: signer.address })
-  await tx.wait()
-
-  console.log('Minted PrivateNFT to:', recipient)
+    const tokenId = 1;
+    tx = await contract.mint(recipientAddress, tokenId);
+    await tx.wait();
+    console.log("NFT minted with token ID:", tokenId);
 }
 
 main().catch((error) => {
-  console.error(error)
-  process.exitCode = 1
-})
+    console.error("Error deploying contract:", error);
+    process.exit(1);
+});
 EOL
-echo "mint.ts script created."
 
-# Run the deploy script
-echo "Running the deploy script..."
-npx hardhat run scripts/deploy.ts --network swisstronik
+echo "Deployment script created at deploy.js"
 
-echo "Script execution completed."
+# Compile the contract using Hardhat
+npx hardhat compile
+
+echo "Setup complete. Run 'npx hardhat run deploy.js --network testnet' to deploy your contract."
